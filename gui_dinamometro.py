@@ -29,6 +29,8 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import numpy as np
 
+from serial_comm import SensorSerial, available_ports
+
 
 DARK_STYLESHEET = """
 QMainWindow, QWidget {
@@ -405,6 +407,102 @@ class ControlPanel(QWidget):
         self.setLayout(layout)
 
 
+class SensorTestPanel(QWidget):
+    """Permite probar cada sensor de forma individual mientras se cablea el hardware."""
+
+    def __init__(self):
+        super().__init__()
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout()
+        layout.addWidget(
+            QLabel(
+                "Conéctate al ESP32 (arriba) y prueba cada sensor por separado "
+                "antes de iniciar una prueba completa."
+            )
+        )
+
+        grid = QGridLayout()
+        grid.setSpacing(16)
+
+        celda_group = QGroupBox("Celda de carga (HX711)")
+        celda_layout = QVBoxLayout()
+        self.btn_test_celda = QPushButton("Probar celda de carga")
+        self.lbl_celda_estado = QLabel("Estado: sin probar")
+        self.lbl_celda_estado.setStyleSheet("color: #9ca3af;")
+        self.lbl_celda_valor = QLabel("Crudo: -- | Fuerza: -- N")
+        self.lbl_celda_valor.setObjectName("smallTitle")
+        celda_layout.addWidget(self.btn_test_celda)
+        celda_layout.addWidget(self.lbl_celda_estado)
+        celda_layout.addWidget(self.lbl_celda_valor)
+        celda_group.setLayout(celda_layout)
+
+        pot_group = QGroupBox("Potenciómetro lineal")
+        pot_layout = QVBoxLayout()
+        self.btn_test_pot = QPushButton("Probar potenciómetro")
+        self.lbl_pot_estado = QLabel("Estado: sin probar")
+        self.lbl_pot_estado.setStyleSheet("color: #9ca3af;")
+        self.lbl_pot_valor = QLabel("Crudo: -- | Volts: -- | Posición: -- mm")
+        self.lbl_pot_valor.setObjectName("smallTitle")
+        pot_layout.addWidget(self.btn_test_pot)
+        pot_layout.addWidget(self.lbl_pot_estado)
+        pot_layout.addWidget(self.lbl_pot_valor)
+        pot_group.setLayout(pot_layout)
+
+        temp_group = QGroupBox("Temperatura (DS18B20 x2)")
+        temp_layout = QVBoxLayout()
+        self.btn_test_temp = QPushButton("Probar sensores de temperatura")
+        self.lbl_temp_estado = QLabel("Estado: sin probar")
+        self.lbl_temp_estado.setStyleSheet("color: #9ca3af;")
+        self.lbl_temp_valor = QLabel("Detectados: -- | T1: -- °C | T2: -- °C")
+        self.lbl_temp_valor.setObjectName("smallTitle")
+        temp_layout.addWidget(self.btn_test_temp)
+        temp_layout.addWidget(self.lbl_temp_estado)
+        temp_layout.addWidget(self.lbl_temp_valor)
+        temp_group.setLayout(temp_layout)
+
+        grid.addWidget(celda_group, 0, 0)
+        grid.addWidget(pot_group, 0, 1)
+        grid.addWidget(temp_group, 0, 2)
+        layout.addLayout(grid)
+        layout.addStretch()
+        self.setLayout(layout)
+
+    def _set_estado(self, label, ok, texto_ok, texto_fail):
+        if ok:
+            label.setText(f"Estado: {texto_ok}")
+            label.setStyleSheet("color: #86efac; font-weight: bold;")
+        else:
+            label.setText(f"Estado: {texto_fail}")
+            label.setStyleSheet("color: #fca5a5; font-weight: bold;")
+
+    def mostrar_resultado_celda(self, payload):
+        ok = bool(payload.get("ok"))
+        self._set_estado(self.lbl_celda_estado, ok, "OK", "no responde")
+        self.lbl_celda_valor.setText(
+            f"Crudo: {payload.get('raw', '--')} | Fuerza: {payload.get('fuerza_n', 0):.3f} N"
+        )
+
+    def mostrar_resultado_pot(self, payload):
+        ok = bool(payload.get("ok"))
+        self._set_estado(self.lbl_pot_estado, ok, "OK", "no responde")
+        self.lbl_pot_valor.setText(
+            f"Crudo: {payload.get('raw', '--')} | Volts: {payload.get('volts', 0):.3f} | "
+            f"Posición: {payload.get('pos_mm', 0):.2f} mm"
+        )
+
+    def mostrar_resultado_temp(self, payload):
+        ok = bool(payload.get("ok"))
+        self._set_estado(self.lbl_temp_estado, ok, "OK", "ningún sensor detectado")
+        detectados = payload.get("detectados", 0)
+        t1 = payload.get("temp1", -127.0)
+        t2 = payload.get("temp2", -127.0)
+        t1_txt = f"{t1:.2f} °C" if payload.get("temp1_ok") else "no detectado"
+        t2_txt = f"{t2:.2f} °C" if payload.get("temp2_ok") else "no detectado"
+        self.lbl_temp_valor.setText(f"Detectados: {detectados} | T1: {t1_txt} | T2: {t2_txt}")
+
+
 class HistoryPanel(QWidget):
     def __init__(self):
         super().__init__()
@@ -431,6 +529,13 @@ class MainWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_live)
         self.elapsed = 0.0
+        self.last_reading = {"fuerza_n": 0.0, "pos_mm": 0.0, "temp1": 0.0, "temp2": 0.0}
+
+        self.serial = SensorSerial()
+        self.serial.data_received.connect(self.on_sensor_data)
+        self.serial.test_result.connect(self.on_test_result)
+        self.serial.ack_received.connect(self.on_ack_received)
+        self.serial.error.connect(self.on_serial_error)
 
         self.init_ui()
 
@@ -445,11 +550,14 @@ class MainWindow(QMainWindow):
         header.addStretch()
 
         self.port_box = QComboBox()
-        self.port_box.addItems(["COM1", "COM3", "COM4", "USB Serial"])
+        self.refresh_ports()
+        self.refresh_ports_btn = QPushButton("ACTUALIZAR")
+        self.refresh_ports_btn.clicked.connect(self.refresh_ports)
         self.connect_btn = QPushButton("CONECTAR")
         self.connect_btn.clicked.connect(self.toggle_connection)
         header.addWidget(QLabel("Puerto:"))
         header.addWidget(self.port_box)
+        header.addWidget(self.refresh_ports_btn)
         header.addWidget(self.connect_btn)
         layout.addLayout(header)
 
@@ -478,7 +586,14 @@ class MainWindow(QMainWindow):
         history = HistoryPanel()
         self.history_panel = history
 
+        sensor_test = SensorTestPanel()
+        self.sensor_test_panel = sensor_test
+        self.sensor_test_panel.btn_test_celda.clicked.connect(lambda: self.run_sensor_test("TEST:HX711"))
+        self.sensor_test_panel.btn_test_pot.clicked.connect(lambda: self.run_sensor_test("TEST:POT"))
+        self.sensor_test_panel.btn_test_temp.clicked.connect(lambda: self.run_sensor_test("TEST:TEMP"))
+
         tabs.addTab(acquisition, "ADQUISICIÓN")
+        tabs.addTab(sensor_test, "PRUEBA DE SENSORES")
         tabs.addTab(calibration, "CALIBRACIÓN")
         tabs.addTab(control, "CONTROL")
         tabs.addTab(history, "HISTORIAL")
@@ -506,17 +621,95 @@ class MainWindow(QMainWindow):
         central.setLayout(layout)
         self.setCentralWidget(central)
 
+    def refresh_ports(self):
+        puertos = available_ports()
+        current = self.port_box.currentText() if self.port_box.count() else None
+        self.port_box.clear()
+        self.port_box.addItems(puertos)
+        if current and current in puertos:
+            self.port_box.setCurrentText(current)
+
     def toggle_connection(self):
         if not self.connected:
+            port = self.port_box.currentText()
+            if not port:
+                QMessageBox.warning(self, "Error", "Selecciona un puerto serial. Usa ACTUALIZAR si no aparece.")
+                return
+            try:
+                self.serial.connect(port, baudrate=115200)
+            except Exception as exc:
+                QMessageBox.critical(self, "Error de conexión", f"No se pudo conectar en {port}:\n{exc}")
+                return
+
             self.connected = True
             self.connect_btn.setText("DESCONECTAR")
             self.values_panel.update_values(0, 0, 0, 0, "Conectado", False, 0)
-            QMessageBox.information(self, "Conexión", "ESP32 conectado correctamente.")
+            QMessageBox.information(self, "Conexión", f"ESP32 conectado en {port}.")
         else:
+            try:
+                self.serial.send_command("STREAM:OFF")
+            except Exception:
+                pass
+            self.serial.disconnect()
             self.connected = False
             self.connect_btn.setText("CONECTAR")
             self.values_panel.update_values(0, 0, 0, 0, "Desconectado", False, 0)
             QMessageBox.information(self, "Conexión", "ESP32 desconectado.")
+
+    def run_sensor_test(self, comando):
+        if not self.connected:
+            QMessageBox.warning(self, "Error", "Debe conectarse primero al ESP32.")
+            return
+        try:
+            self.serial.send_command(comando)
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"No se pudo enviar el comando: {exc}")
+
+    def on_test_result(self, payload):
+        tipo = payload.get("test")
+        if tipo == "HX711":
+            self.sensor_test_panel.mostrar_resultado_celda(payload)
+        elif tipo == "POT":
+            self.sensor_test_panel.mostrar_resultado_pot(payload)
+        elif tipo == "TEMP":
+            self.sensor_test_panel.mostrar_resultado_temp(payload)
+
+    def on_ack_received(self, payload):
+        ack = payload.get("ack")
+        if ack == "TARE_OK":
+            self.calibration_panel.lbl_celda.setText("Estado: tara aplicada")
+            self.calibration_panel.lbl_celda.setStyleSheet("color: #86efac;")
+        elif ack == "CAL_OK":
+            factor = payload.get("factor", 0.0)
+            self.calibration_panel.lbl_celda.setText(f"Estado: calibrado (factor {factor:.3f})")
+            self.calibration_panel.lbl_celda.setStyleSheet("color: #86efac;")
+            self.calibration_panel.info_box.setText(
+                f"Celda calibrada. Factor de conversión: {factor:.3f} cuentas/N."
+            )
+        elif ack == "CAL_ERROR":
+            self.calibration_panel.lbl_celda.setText("Estado: error de calibración")
+            self.calibration_panel.lbl_celda.setStyleSheet("color: #fca5a5;")
+            QMessageBox.warning(self, "Calibración", "No se pudo calibrar la celda. Verifica la conexión del HX711.")
+        elif ack == "ZERO_POS_OK":
+            self.calibration_panel.lbl_pos.setText("Estado: calibrado")
+            self.calibration_panel.lbl_pos.setStyleSheet("color: #86efac;")
+            self.calibration_panel.info_box.setText("Posición inicial calibrada correctamente.\nReferencia 0 mm establecida.")
+
+    def on_serial_error(self, mensaje):
+        QMessageBox.critical(self, "Error de comunicación serial", mensaje)
+
+    def on_sensor_data(self, data):
+        self.last_reading = data
+        if not self.connected:
+            return
+        fuerza = data.get("fuerza_n", 0.0)
+        recorrido = data.get("pos_mm", 0.0)
+        temp1 = data.get("temp1", 0.0)
+        temp2 = data.get("temp2", 0.0)
+        estado = "Pruebando" if self.timer.isActive() else "Conectado"
+        self.values_panel.update_values(fuerza, recorrido, temp1, temp2, estado, self.motor_on, self.elapsed)
+        if self.timer.isActive():
+            self.graph_panel.update_data(self.elapsed, fuerza, recorrido, temp1, temp2)
 
     def start_test(self):
         if not self.connected:
@@ -525,6 +718,11 @@ class MainWindow(QMainWindow):
 
         self.elapsed = 0.0
         self.graph_panel.clear_data()
+        try:
+            self.serial.send_command("STREAM:ON")
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"No se pudo iniciar la transmisión: {exc}")
+            return
         self.timer.start(100)
         self.stop_test_btn.setEnabled(True)
         self.file_label.setText("Archivo: prueba_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".json")
@@ -532,6 +730,10 @@ class MainWindow(QMainWindow):
 
     def stop_test(self):
         self.timer.stop()
+        try:
+            self.serial.send_command("STREAM:OFF")
+        except Exception:
+            pass
         self.stop_test_btn.setEnabled(False)
         self.save_test_btn.setEnabled(True)
         self.turn_motor_off()
@@ -554,27 +756,31 @@ class MainWindow(QMainWindow):
 
     def update_live(self):
         self.elapsed += 0.1
-
-        fuerza = 60 * np.sin(self.elapsed / 4.0)
-        recorrido = 80 + 35 * np.cos(self.elapsed / 5.0)
-        temp1 = 22 + 3 * np.sin(self.elapsed / 7.0)
-        temp2 = 21 + 2.5 * np.cos(self.elapsed / 6.0)
-
+        fuerza = self.last_reading.get("fuerza_n", 0.0)
+        recorrido = self.last_reading.get("pos_mm", 0.0)
+        temp1 = self.last_reading.get("temp1", 0.0)
+        temp2 = self.last_reading.get("temp2", 0.0)
         self.values_panel.update_values(fuerza, recorrido, temp1, temp2, "Pruebando", self.motor_on, self.elapsed)
-        self.graph_panel.update_data(self.elapsed, fuerza, recorrido, temp1, temp2)
 
     def calibrate_position(self):
-        self.calibration_panel.lbl_pos.setText("Estado: calibrado")
-        self.calibration_panel.lbl_pos.setStyleSheet("color: #86efac;")
-        self.calibration_panel.info_box.setText("Posición inicial calibrada correctamente.\nReferencia 0 mm establecida.")
+        if not self.connected:
+            QMessageBox.warning(self, "Error", "Debe conectarse primero al ESP32.")
+            return
+        try:
+            self.serial.send_command("ZERO_POS")
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"No se pudo calibrar la posición: {exc}")
 
     def calibrate_cell(self):
+        if not self.connected:
+            QMessageBox.warning(self, "Error", "Debe conectarse primero al ESP32.")
+            return
         value = self.calibration_panel.peso_box.value()
-        self.calibration_panel.lbl_celda.setText(f"Estado: calibrado con {value} kg")
-        self.calibration_panel.lbl_celda.setStyleSheet("color: #86efac;")
-        self.calibration_panel.info_box.setText(
-            f"Celda calibrada con un peso de referencia de {value} kg.\nFactor de conversión listo para uso."
-        )
+        try:
+            self.serial.send_command("TARE")
+            self.serial.send_command(f"CAL:{value}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"No se pudo calibrar la celda: {exc}")
 
     def turn_motor_on(self):
         self.motor_on = True
@@ -600,6 +806,15 @@ class MainWindow(QMainWindow):
             "Secuencia",
             f"Encendido: {enc}s\nApagado: {apag}s\nCiclos: {ciclos}",
         )
+
+    def closeEvent(self, event):
+        try:
+            if self.serial.is_open:
+                self.serial.send_command("STREAM:OFF")
+        except Exception:
+            pass
+        self.serial.disconnect()
+        super().closeEvent(event)
 
 
 if __name__ == "__main__":
