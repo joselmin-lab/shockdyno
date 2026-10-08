@@ -131,6 +131,25 @@ float leerTemperatura(DeviceAddress direccion, bool detectado) {
   return sensoresTemp.getTempC(direccion);
 }
 
+// requestTemperatures() bloquea ~750ms (12 bits) esperando la conversion del DS18B20.
+// Para no frenar el streaming (100ms), se pide la conversion en modo no bloqueante
+// y se cachean las ultimas lecturas; se vuelve a pedir cada intervaloTemp ms.
+unsigned long ultimaSolicitudTemp = 0;
+const unsigned long intervaloTemp = 300; // ms, >= tiempo de conversion a 10 bits (~187ms)
+float tempCache1 = -127.0f;
+float tempCache2 = -127.0f;
+
+void actualizarTemperaturasAsync() {
+  if (!temp1Detectado && !temp2Detectado) return;
+  unsigned long ahora = millis();
+  if (ahora - ultimaSolicitudTemp >= intervaloTemp) {
+    ultimaSolicitudTemp = ahora;
+    tempCache1 = leerTemperatura(direccionTemp1, temp1Detectado);
+    tempCache2 = leerTemperatura(direccionTemp2, temp2Detectado);
+    sensoresTemp.requestTemperatures(); // no bloqueante: dispara la siguiente conversion
+  }
+}
+
 float leerFuerzaN() {
   if (!balanza.is_ready() || factorCalibracionCelda == 0.0f) return 0.0f;
   long crudo = balanza.read() - offsetCelda;
@@ -180,9 +199,8 @@ void enviarLecturaCompleta() {
   float fuerzaN = leerFuerzaN();
   int posRaw = leerPotCrudo();
   float posMM = leerPosicionMM();
-  sensoresTemp.requestTemperatures();
-  float t1 = leerTemperatura(direccionTemp1, temp1Detectado);
-  float t2 = leerTemperatura(direccionTemp2, temp2Detectado);
+  float t1 = tempCache1;
+  float t2 = tempCache2;
 
   Serial.print("{");
   Serial.print("\"t\":"); Serial.print(millis());
@@ -226,6 +244,7 @@ void probarPotenciometro() {
 void probarTemperatura() {
   detectarSensoresTemperatura();
   sensoresTemp.requestTemperatures();
+  delay(200); // setWaitForConversion(false): esperar la conversion (10 bits ~187ms) antes de leer
   float t1 = leerTemperatura(direccionTemp1, temp1Detectado);
   float t2 = leerTemperatura(direccionTemp2, temp2Detectado);
   int cantidad = sensoresTemp.getDeviceCount();
@@ -298,6 +317,12 @@ void setup() {
   posicionReferenciaRaw = leerPotCrudo();
 
   detectarSensoresTemperatura();
+  sensoresTemp.setWaitForConversion(false); // no bloquear: leer con cache + solicitud periodica
+  sensoresTemp.setResolution(10); // 10 bits: conversion ~187ms (suficiente precision, mas rapido)
+  if (temp1Detectado || temp2Detectado) {
+    sensoresTemp.requestTemperatures();
+    ultimaSolicitudTemp = millis();
+  }
 
   responderAck("READY");
 }
@@ -307,6 +332,8 @@ void loop() {
     String linea = Serial.readStringUntil('\n');
     procesarComando(linea);
   }
+
+  actualizarTemperaturasAsync();
 
   if (streaming && (millis() - ultimoEnvio >= intervaloEnvioMs)) {
     ultimoEnvio = millis();
