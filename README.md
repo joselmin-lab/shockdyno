@@ -49,7 +49,29 @@ módulo usa PSRAM/flash octal); por eso se usan pines bajos en vez de los típic
 Requiere las librerías `HX711` (bogde), `OneWire` y `DallasTemperature` desde el Arduino Library Manager.
 En Arduino IDE selecciona la placa **"ESP32S3 Dev Module"** a 115200 baudios. Si tu placa solo tiene
 un puerto USB nativo (sin chip USB-UART aparte), activa **"USB CDC On Boot: Enabled"** en Herramientas,
-o el puerto serie no aparecerá hasta que inicialice el stack USB.
+o el puerto serie no aparecerá hasta que inicialice el stack USB. Si tu placa tiene dos puertos
+(uno "USB" y otro "COM"/"UART"), usa el puerto **COM** para programar: pasa por un chip USB-serie
+dedicado y es más confiable que el puerto nativo.
+
+### Potenciómetro / transductor lineal (ej. Gefran LT-M)
+
+Conexión de 3 hilos (potenciómetro conductivo), excitación a 3.3V (coincide con el rango del ADC,
+sin necesitar divisor de voltaje):
+
+| Cable (color típico Gefran) | Función | Pin ESP32-S3 |
+|---|---|---|
+| Café/marrón | +V (excitación) | 3V3 |
+| Celeste/azul | Salida (cursor) | GPIO1 |
+| Verde/amarillo | GND | GND |
+
+Para reducir ruido:
+- El firmware promedia 16 muestras del ADC por lectura (ver `leerPotCrudo()`).
+- Si el cable del sensor trae una malla/blindaje, conéctala a GND **solo en el extremo del ESP32**
+  (no en ambos extremos, para evitar bucles de tierra).
+- Separa el cableado del sensor de cualquier cable de potencia/motor; si deben cruzarse, que sea
+  en ángulo recto (90°), nunca en paralelo.
+- Si el ruido persiste, agrega un capacitor cerámico de 100nF entre GPIO1 y GND, lo más cerca
+  posible del pin del ESP32.
 
 ## Probar los sensores uno por uno
 

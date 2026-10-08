@@ -92,16 +92,28 @@ float leerFuerzaN() {
   return (float)crudo / factorCalibracionCelda;
 }
 
+// Promedia varias lecturas del ADC para reducir el ruido típico del ESP32.
+int leerPotCrudo() {
+  const int muestras = 16;
+  long suma = 0;
+  for (int i = 0; i < muestras; i++) {
+    suma += analogRead(POT_PIN);
+    delayMicroseconds(100);
+  }
+  return (int)(suma / muestras);
+}
+
 float leerPosicionMM() {
-  int crudo = analogRead(POT_PIN);
+  int crudo = leerPotCrudo();
   long relativo = crudo - posicionReferenciaRaw;
   return (relativo / POT_ADC_MAX) * POT_RECORRIDO_MM;
 }
 
+
 void enviarLecturaCompleta() {
   long fuerzaRaw = balanza.is_ready() ? balanza.read() : 0;
   float fuerzaN = leerFuerzaN();
-  int posRaw = analogRead(POT_PIN);
+  int posRaw = leerPotCrudo();
   float posMM = leerPosicionMM();
   sensoresTemp.requestTemperatures();
   float t1 = leerTemperatura(direccionTemp1, temp1Detectado);
@@ -136,7 +148,7 @@ void probarCelda() {
 }
 
 void probarPotenciometro() {
-  int crudo = analogRead(POT_PIN);
+  int crudo = leerPotCrudo();
   float volts = (crudo / POT_ADC_MAX) * POT_VREF;
   float posMM = leerPosicionMM();
   Serial.print("{\"test\":\"POT\",\"ok\":true");
@@ -184,7 +196,7 @@ void procesarComando(String linea) {
       responderAck("CAL_ERROR");
     }
   } else if (linea == "ZERO_POS") {
-    posicionReferenciaRaw = analogRead(POT_PIN);
+    posicionReferenciaRaw = leerPotCrudo();
     responderAck("ZERO_POS_OK");
   } else if (linea == "TEST:HX711") {
     probarCelda();
@@ -213,7 +225,8 @@ void setup() {
 
   analogReadResolution(12);
   pinMode(POT_PIN, INPUT);
-  posicionReferenciaRaw = analogRead(POT_PIN);
+  analogSetPinAttenuation(POT_PIN, ADC_11db); // habilita rango completo 0-3.3V
+  posicionReferenciaRaw = leerPotCrudo();
 
   detectarSensoresTemperatura();
 
