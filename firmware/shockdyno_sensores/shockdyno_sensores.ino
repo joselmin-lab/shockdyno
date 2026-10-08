@@ -96,8 +96,8 @@
   #define POT_ADC_MAX      4095.0f
 #endif
 // Recorrido físico (mm) correspondiente al rango completo del potenciómetro.
-// Ajustar según el montaje mecánico real.
-#define POT_RECORRIDO_MM 100.0f
+// Gefran LT-M-0150-S: 150 mm de carrera.
+#define POT_RECORRIDO_MM 150.0f
 
 HX711 balanza;
 OneWire oneWire(ONEWIRE_PIN);
@@ -132,15 +132,31 @@ float leerFuerzaN() {
   return (float)crudo / factorCalibracionCelda;
 }
 
-// Promedia varias lecturas del ADC para reducir el ruido típico del ESP32.
+// Promedia varias lecturas del ADC para reducir el ruido típico del ESP32/Arduino.
+// Descarta el valor más alto y más bajo (recorte de picos) antes de promediar.
 int leerPotCrudo() {
-  const int muestras = 16;
-  long suma = 0;
+  const int muestras = 32;
+  int lecturas[muestras];
   for (int i = 0; i < muestras; i++) {
-    suma += analogRead(POT_PIN);
-    delayMicroseconds(100);
+    lecturas[i] = analogRead(POT_PIN);
+    delayMicroseconds(200);
   }
-  return (int)(suma / muestras);
+  // Orden simple por inserción (muestras es pequeño, no afecta el tiempo real).
+  for (int i = 1; i < muestras; i++) {
+    int clave = lecturas[i];
+    int j = i - 1;
+    while (j >= 0 && lecturas[j] > clave) {
+      lecturas[j + 1] = lecturas[j];
+      j--;
+    }
+    lecturas[j + 1] = clave;
+  }
+  long suma = 0;
+  const int descarte = 4; // descarta los 4 más bajos y los 4 más altos
+  for (int i = descarte; i < muestras - descarte; i++) {
+    suma += lecturas[i];
+  }
+  return (int)(suma / (muestras - 2 * descarte));
 }
 
 float leerPosicionMM() {
