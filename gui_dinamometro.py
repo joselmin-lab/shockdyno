@@ -214,6 +214,7 @@ class GraphPanel(QWidget):
         selector_layout.addWidget(QLabel("Gráfico:"))
         self.selector = QComboBox()
         self.selector.addItems([
+            "Recorrido vs Tiempo",
             "Fuerza vs Tiempo",
             "Fuerza vs Recorrido",
             "Temperatura 1 vs Tiempo",
@@ -252,7 +253,14 @@ class GraphPanel(QWidget):
         t = np.array(self.data["t"])
         name = self.selector.currentText()
 
-        if name == "Fuerza vs Tiempo":
+        if name == "Recorrido vs Tiempo":
+            r = np.array(self.data["r"])
+            self.canvas.ax.plot(t, r, color="#34d399", linewidth=2)
+            self.canvas.ax.set_title("Recorrido vs Tiempo")
+            self.canvas.ax.set_xlabel("Tiempo (s)")
+            self.canvas.ax.set_ylabel("Recorrido (mm)")
+
+        elif name == "Fuerza vs Tiempo":
             f = np.array(self.data["f"])
             self.canvas.ax.plot(t, f, color="#60a5fa", linewidth=2)
             self.canvas.ax.set_title("Fuerza vs Tiempo")
