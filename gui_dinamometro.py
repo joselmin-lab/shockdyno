@@ -1,5 +1,6 @@
 import sys
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -202,11 +203,58 @@ class ValuesPanel(QWidget):
 
 
 class GraphPanel(QWidget):
+    # Especificacion declarativa por tipo de grafico: que lineas dibujar,
+    # titulo y etiquetas de ejes. Permite reconstruir los ejes (operacion
+    # costosa: fuentes/titulos/grid) solo cuando cambia el tipo de grafico,
+    # y en cada dato nuevo solo actualizar los puntos de las lineas (barato).
+    GRAFICOS = {
+        "Recorrido vs Tiempo": {
+            "lineas": [("t", "r", "#34d399", None)],
+            "titulo": "Recorrido vs Tiempo", "xlabel": "Tiempo (s)", "ylabel": "Recorrido (mm)",
+        },
+        "Fuerza vs Tiempo": {
+            "lineas": [("t", "f", "#60a5fa", None)],
+            "titulo": "Fuerza vs Tiempo", "xlabel": "Tiempo (s)", "ylabel": "Fuerza (N)",
+        },
+        "Fuerza vs Recorrido": {
+            "lineas": [("r", "f", "#34d399", None)],
+            "titulo": "Fuerza vs Recorrido", "xlabel": "Recorrido (mm)", "ylabel": "Fuerza (N)",
+        },
+        "Temperatura 1 vs Tiempo": {
+            "lineas": [("t", "t1", "#f59e0b", None)],
+            "titulo": "Temperatura 1 vs Tiempo", "xlabel": "Tiempo (s)", "ylabel": "Temperatura (°C)",
+        },
+        "Temperatura 2 vs Tiempo": {
+            "lineas": [("t", "t2", "#f97316", None)],
+            "titulo": "Temperatura 2 vs Tiempo", "xlabel": "Tiempo (s)", "ylabel": "Temperatura (°C)",
+        },
+        "Ambas Temperaturas": {
+            "lineas": [("t", "t1", "#f59e0b", "Temp 1"), ("t", "t2", "#f97316", "Temp 2")],
+            "titulo": "Ambas Temperaturas", "xlabel": "Tiempo (s)", "ylabel": "Temperatura (°C)",
+            "legend": True,
+        },
+    }
+
+    VENTANA_PUNTOS = 400  # puntos maximos mostrados en pantalla (limita el costo de pintado;
+                          # self.data conserva el historial completo para guardar la prueba)
+    INTERVALO_REDIBUJO_MS = 250  # redibuja como maximo ~4 veces/seg, desacoplado de la llegada de datos
+
     def __init__(self):
         super().__init__()
         self.data = {"t": [], "f": [], "r": [], "t1": [], "t2": []}
         self.ax2 = None  # eje secundario (twinx), reutilizado en vez de recrearse
+        self._built_name = None  # tipo de grafico con el que se construyeron los ejes actuales
+        self._lines = []  # lineas (Line2D) ya creadas, reutilizadas en cada actualizacion
+        self._dirty = False  # hay datos nuevos pendientes de pintar
         self.init_ui()
+
+        # El pintado en pantalla puede ser lento (cientos de ms); si se intentara
+        # redibujar en cada dato entrante (10Hz) se acumularia un atraso creciente.
+        # Un temporizador propio desacopla la llegada de datos (rapida) del
+        # redibujado (lento), pintando solo el ultimo estado disponible.
+        self._redraw_timer = QTimer(self)
+        self._redraw_timer.timeout.connect(self._redibujar_si_hay_cambios)
+        self._redraw_timer.start(self.INTERVALO_REDIBUJO_MS)
 
     def init_ui(self):
         layout = QVBoxLayout()
@@ -238,89 +286,88 @@ class GraphPanel(QWidget):
         self.data["r"].append(r)
         self.data["t1"].append(t1)
         self.data["t2"].append(t2)
-        # Redibuja como máximo ~5 veces/seg (cada 2do punto a 10Hz) para evitar
-        # saturar el event loop de Qt con redibujados de matplotlib.
-        self._puntos_desde_render = getattr(self, "_puntos_desde_render", 0) + 1
-        if self._puntos_desde_render >= 2:
-            self._puntos_desde_render = 0
+        self._dirty = True
+
+    def _redibujar_si_hay_cambios(self):
+        if self._dirty:
+            self._dirty = False
             self.render_graph()
 
     def clear_data(self):
         self.data = {"t": [], "f": [], "r": [], "t1": [], "t2": []}
+        self._built_name = None  # fuerza reconstruir los ejes (p.ej. limpiar leyenda/eje secundario)
+        self._dirty = False
         self.render_graph()
 
-    def render_graph(self):
+    def _construir_ejes(self, name):
+        """Reconstruye titulo/etiquetas/lineas vacias. Operacion costosa: solo
+        se llama cuando cambia el tipo de grafico seleccionado, no en cada dato."""
         self.canvas.ax.clear()
         if self.ax2 is not None:
             self.ax2.remove()
             self.ax2 = None
+        self._lines = []
 
-        if not self.data["t"]:
-            self.canvas.draw_idle()
-            return
-
-        t = np.array(self.data["t"])
-        name = self.selector.currentText()
-
-        if name == "Recorrido vs Tiempo":
-            r = np.array(self.data["r"])
-            self.canvas.ax.plot(t, r, color="#34d399", linewidth=2)
-            self.canvas.ax.set_title("Recorrido vs Tiempo")
-            self.canvas.ax.set_xlabel("Tiempo (s)")
-            self.canvas.ax.set_ylabel("Recorrido (mm)")
-
-        elif name == "Fuerza vs Tiempo":
-            f = np.array(self.data["f"])
-            self.canvas.ax.plot(t, f, color="#60a5fa", linewidth=2)
-            self.canvas.ax.set_title("Fuerza vs Tiempo")
-            self.canvas.ax.set_xlabel("Tiempo (s)")
-            self.canvas.ax.set_ylabel("Fuerza (N)")
-
-        elif name == "Fuerza vs Recorrido":
-            r = np.array(self.data["r"])
-            f = np.array(self.data["f"])
-            self.canvas.ax.plot(r, f, color="#34d399", linewidth=2)
-            self.canvas.ax.set_title("Fuerza vs Recorrido")
-            self.canvas.ax.set_xlabel("Recorrido (mm)")
-            self.canvas.ax.set_ylabel("Fuerza (N)")
-
-        elif name == "Temperatura 1 vs Tiempo":
-            t1 = np.array(self.data["t1"])
-            self.canvas.ax.plot(t, t1, color="#f59e0b", linewidth=2)
-            self.canvas.ax.set_title("Temperatura 1 vs Tiempo")
-            self.canvas.ax.set_xlabel("Tiempo (s)")
-            self.canvas.ax.set_ylabel("Temperatura (°C)")
-
-        elif name == "Temperatura 2 vs Tiempo":
-            t2 = np.array(self.data["t2"])
-            self.canvas.ax.plot(t, t2, color="#f97316", linewidth=2)
-            self.canvas.ax.set_title("Temperatura 2 vs Tiempo")
-            self.canvas.ax.set_xlabel("Tiempo (s)")
-            self.canvas.ax.set_ylabel("Temperatura (°C)")
-
-        elif name == "Fuerza y Recorrido":
-            f = np.array(self.data["f"])
-            r = np.array(self.data["r"])
-            self.canvas.ax.plot(t, f, color="#60a5fa", linewidth=2, label="Fuerza")
+        if name == "Fuerza y Recorrido":
+            (linea_f,) = self.canvas.ax.plot([], [], color="#60a5fa", linewidth=2, label="Fuerza", antialiased=False)
             self.ax2 = self.canvas.ax.twinx()
-            self.ax2.plot(t, r, color="#34d399", linewidth=2, label="Recorrido")
+            (linea_r,) = self.ax2.plot([], [], color="#34d399", linewidth=2, label="Recorrido", antialiased=False)
+            self._lines = [("f", linea_f, self.canvas.ax), ("r", linea_r, self.ax2)]
             self.canvas.ax.set_title("Fuerza y Recorrido")
             self.canvas.ax.set_xlabel("Tiempo (s)")
             self.canvas.ax.set_ylabel("Fuerza (N)")
             self.ax2.set_ylabel("Recorrido (mm)")
             self.canvas.ax.legend(loc="upper left")
-
-        elif name == "Ambas Temperaturas":
-            t1 = np.array(self.data["t1"])
-            t2 = np.array(self.data["t2"])
-            self.canvas.ax.plot(t, t1, color="#f59e0b", linewidth=2, label="Temp 1")
-            self.canvas.ax.plot(t, t2, color="#f97316", linewidth=2, label="Temp 2")
-            self.canvas.ax.set_title("Ambas Temperaturas")
-            self.canvas.ax.set_xlabel("Tiempo (s)")
-            self.canvas.ax.set_ylabel("Temperatura (°C)")
-            self.canvas.ax.legend()
+        else:
+            config = self.GRAFICOS[name]
+            for xkey, ykey, color, label in config["lineas"]:
+                (linea,) = self.canvas.ax.plot([], [], color=color, linewidth=2, label=label, antialiased=False)
+                self._lines.append((f"{xkey}:{ykey}", linea, self.canvas.ax))
+            self.canvas.ax.set_title(config["titulo"])
+            self.canvas.ax.set_xlabel(config["xlabel"])
+            self.canvas.ax.set_ylabel(config["ylabel"])
+            if config.get("legend"):
+                self.canvas.ax.legend()
 
         self.canvas.ax.grid(True, alpha=0.2)
+        self._built_name = name
+
+    def render_graph(self):
+        name = self.selector.currentText()
+        if name != self._built_name:
+            self._construir_ejes(name)
+
+        if not self.data["t"]:
+            self.canvas.draw_idle()
+            return
+
+        # Solo se grafican los ultimos N puntos: acota el costo de pintado aunque
+        # la prueba dure mucho tiempo. self.data conserva el historial completo.
+        inicio = max(0, len(self.data["t"]) - self.VENTANA_PUNTOS)
+        t = np.array(self.data["t"][inicio:])
+
+        if name == "Fuerza y Recorrido":
+            f = np.array(self.data["f"][inicio:])
+            r = np.array(self.data["r"][inicio:])
+            series = {"f": (t, f), "r": (t, r)}
+        else:
+            config = self.GRAFICOS[name]
+            series = {}
+            for xkey, ykey, _color, _label in config["lineas"]:
+                x = np.array(self.data["r"][inicio:]) if xkey == "r" else t
+                y = np.array(self.data[ykey][inicio:])
+                series[f"{xkey}:{ykey}"] = (x, y)
+
+        ejes_a_reescalar = set()
+        for clave, linea, eje in self._lines:
+            x, y = series[clave]
+            linea.set_data(x, y)
+            ejes_a_reescalar.add(eje)
+
+        for eje in ejes_a_reescalar:
+            eje.relim()
+            eje.autoscale_view()
+
         self.canvas.draw_idle()
 
 
@@ -546,6 +593,8 @@ class MainWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_live)
         self.elapsed = 0.0
+        self.t0_firmware = None
+        self._inicio_prueba = time.monotonic()
         self.last_reading = {"fuerza_n": 0.0, "pos_mm": 0.0, "temp1": 0.0, "temp2": 0.0}
 
         self.serial = SensorSerial()
@@ -726,7 +775,17 @@ class MainWindow(QMainWindow):
         estado = "Pruebando" if self.timer.isActive() else "Conectado"
         self.values_panel.update_values(fuerza, recorrido, temp1, temp2, estado, self.motor_on, self.elapsed)
         if self.timer.isActive():
-            self.graph_panel.update_data(self.elapsed, fuerza, recorrido, temp1, temp2)
+            # Usar el timestamp real del firmware (millis()) en vez del contador
+            # de la GUI, para que cada muestra tenga su propio instante exacto y
+            # no se apilen varios puntos en la misma posicion si llegan en rafaga.
+            t_firmware = data.get("t")
+            if t_firmware is not None:
+                if self.t0_firmware is None:
+                    self.t0_firmware = t_firmware
+                t_grafico = (t_firmware - self.t0_firmware) / 1000.0
+            else:
+                t_grafico = self.elapsed
+            self.graph_panel.update_data(t_grafico, fuerza, recorrido, temp1, temp2)
 
     def start_test(self):
         if not self.connected:
@@ -734,6 +793,8 @@ class MainWindow(QMainWindow):
             return
 
         self.elapsed = 0.0
+        self.t0_firmware = None
+        self._inicio_prueba = time.monotonic()
         self.graph_panel.clear_data()
         try:
             self.serial.send_command("STREAM:ON")
@@ -772,7 +833,9 @@ class MainWindow(QMainWindow):
         self.save_test_btn.setEnabled(False)
 
     def update_live(self):
-        self.elapsed += 0.1
+        # Tiempo real transcurrido (reloj de pared), no un contador que asume
+        # que el QTimer dispara exactamente cada 100ms (puede desfasarse bajo carga).
+        self.elapsed = time.monotonic() - self._inicio_prueba
         fuerza = self.last_reading.get("fuerza_n", 0.0)
         recorrido = self.last_reading.get("pos_mm", 0.0)
         temp1 = self.last_reading.get("temp1", 0.0)
