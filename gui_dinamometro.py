@@ -205,6 +205,7 @@ class GraphPanel(QWidget):
     def __init__(self):
         super().__init__()
         self.data = {"t": [], "f": [], "r": [], "t1": [], "t2": []}
+        self.ax2 = None  # eje secundario (twinx), reutilizado en vez de recrearse
         self.init_ui()
 
     def init_ui(self):
@@ -237,7 +238,12 @@ class GraphPanel(QWidget):
         self.data["r"].append(r)
         self.data["t1"].append(t1)
         self.data["t2"].append(t2)
-        self.render_graph()
+        # Redibuja como máximo ~5 veces/seg (cada 2do punto a 10Hz) para evitar
+        # saturar el event loop de Qt con redibujados de matplotlib.
+        self._puntos_desde_render = getattr(self, "_puntos_desde_render", 0) + 1
+        if self._puntos_desde_render >= 2:
+            self._puntos_desde_render = 0
+            self.render_graph()
 
     def clear_data(self):
         self.data = {"t": [], "f": [], "r": [], "t1": [], "t2": []}
@@ -245,9 +251,12 @@ class GraphPanel(QWidget):
 
     def render_graph(self):
         self.canvas.ax.clear()
+        if self.ax2 is not None:
+            self.ax2.remove()
+            self.ax2 = None
 
         if not self.data["t"]:
-            self.canvas.draw()
+            self.canvas.draw_idle()
             return
 
         t = np.array(self.data["t"])
@@ -293,12 +302,12 @@ class GraphPanel(QWidget):
             f = np.array(self.data["f"])
             r = np.array(self.data["r"])
             self.canvas.ax.plot(t, f, color="#60a5fa", linewidth=2, label="Fuerza")
-            ax2 = self.canvas.ax.twinx()
-            ax2.plot(t, r, color="#34d399", linewidth=2, label="Recorrido")
+            self.ax2 = self.canvas.ax.twinx()
+            self.ax2.plot(t, r, color="#34d399", linewidth=2, label="Recorrido")
             self.canvas.ax.set_title("Fuerza y Recorrido")
             self.canvas.ax.set_xlabel("Tiempo (s)")
             self.canvas.ax.set_ylabel("Fuerza (N)")
-            ax2.set_ylabel("Recorrido (mm)")
+            self.ax2.set_ylabel("Recorrido (mm)")
             self.canvas.ax.legend(loc="upper left")
 
         elif name == "Ambas Temperaturas":
@@ -312,7 +321,7 @@ class GraphPanel(QWidget):
             self.canvas.ax.legend()
 
         self.canvas.ax.grid(True, alpha=0.2)
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
 
 class CalibrationPanel(QWidget):
