@@ -35,16 +35,21 @@ python gui_dinamometro.py
 - Guardado de historial por carpeta
 - Exportación a CSV/PDF (preparado)
 
-## Firmware (ESP32)
+## Firmware (ESP32-S3)
 
 El sketch `firmware/shockdyno_sensores/shockdyno_sensores.ino` lee:
 
-- Celda de carga vía **HX711** (DOUT = GPIO16, SCK = GPIO4)
-- Potenciómetro lineal por ADC (GPIO34)
-- Dos sensores de temperatura **DS18B20** en un bus OneWire compartido (GPIO15, con pull-up de 4.7k)
+- Potenciómetro lineal por ADC (**GPIO1**, ADC1_CH0)
+- Celda de carga vía **HX711** (DOUT = GPIO4, SCK = GPIO5)
+- Dos sensores de temperatura **DS18B20** en un bus OneWire compartido (GPIO6, con pull-up de 4.7k)
+
+En ESP32-S3 se evitan los pines de strapping (GPIO0/3/45/46) y GPIO26-37 (reservados si el
+módulo usa PSRAM/flash octal); por eso se usan pines bajos en vez de los típicos del ESP32 original.
 
 Requiere las librerías `HX711` (bogde), `OneWire` y `DallasTemperature` desde el Arduino Library Manager.
-Súbelo con Arduino IDE/PlatformIO a 115200 baudios.
+En Arduino IDE selecciona la placa **"ESP32S3 Dev Module"** a 115200 baudios. Si tu placa solo tiene
+un puerto USB nativo (sin chip USB-UART aparte), activa **"USB CDC On Boot: Enabled"** en Herramientas,
+o el puerto serie no aparecerá hasta que inicialice el stack USB.
 
 ## Probar los sensores uno por uno
 

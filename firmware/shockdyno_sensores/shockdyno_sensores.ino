@@ -1,5 +1,5 @@
 /*
- * ShockDyno - Firmware de sensores (ESP32)
+ * ShockDyno - Firmware de sensores (ESP32-S3)
  * -----------------------------------------
  * Lee celda de carga (HX711), potenciómetro lineal (ADC) y dos sensores
  * de temperatura DS18B20, y los expone por puerto serie (USB) en formato
@@ -10,11 +10,20 @@
  *   - OneWire (PaulStoffregen/OneWire)
  *   - DallasTemperature (milesburton/Arduino-Temperature-Control-Library)
  *
- * Conexiones sugeridas (ESP32 DevKit):
- *   HX711   DOUT -> GPIO16   SCK -> GPIO4
- *   Potenciómetro (salida) -> GPIO34 (ADC1, solo entrada)
- *   DS18B20 x2 (bus OneWire compartido) -> GPIO15 con resistencia
+ * Conexiones sugeridas (ESP32-S3 DevKitC-1):
+ *   Potenciómetro (cursor/wiper) -> GPIO1  (ADC1_CH0)
+ *   HX711   DOUT -> GPIO4        SCK -> GPIO5
+ *   DS18B20 x2 (bus OneWire compartido) -> GPIO6 con resistencia
  *     pull-up de 4.7k entre datos y 3.3V
+ *
+ *   NOTA: en ESP32-S3 se evitan GPIO0/3/45/46 (strapping) y GPIO26-37
+ *   (reservados si el módulo usa PSRAM/flash octal). Por eso se usan
+ *   pines bajos (1, 4, 5, 6) en vez de los típicos del ESP32 original.
+ *
+ *   Placa en Arduino IDE: "ESP32S3 Dev Module".
+ *   Si tu placa tiene un solo puerto USB nativo (no un chip USB-UART
+ *   aparte), activa "USB CDC On Boot: Enabled" en Herramientas, o el
+ *   puerto serie no aparecerá hasta inicializar el stack USB.
  *
  * Protocolo serie (115200 baudios, líneas terminadas en \n):
  *   GUI -> ESP32:
@@ -37,11 +46,11 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
-// ----- Pines -----
-#define HX711_DOUT_PIN   16
-#define HX711_SCK_PIN    4
-#define POT_PIN          34   // ADC1_CH6, pin de solo entrada en ESP32
-#define ONEWIRE_PIN      15
+// ----- Pines (ESP32-S3) -----
+#define HX711_DOUT_PIN   4
+#define HX711_SCK_PIN    5
+#define POT_PIN          1    // ADC1_CH0
+#define ONEWIRE_PIN      6
 
 // ----- Parámetros -----
 #define POT_VREF         3.3f
