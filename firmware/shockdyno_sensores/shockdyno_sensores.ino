@@ -1,29 +1,44 @@
 /*
- * ShockDyno - Firmware de sensores (ESP32-S3)
+ * ShockDyno - Firmware de sensores (multiplataforma)
  * -----------------------------------------
  * Lee celda de carga (HX711), potenciómetro lineal (ADC) y dos sensores
  * de temperatura DS18B20, y los expone por puerto serie (USB) en formato
  * JSON para la GUI de PyQt (gui_dinamometro.py).
+ *
+ * Este mismo archivo compila sin cambios para:
+ *   - Arduino Uno (placa de pruebas temporal, 5V / ADC 10 bits)
+ *   - ESP32-WROOM-32 clásico (3.3V / ADC 12 bits)
+ *   - ESP32-S3 (3.3V / ADC 12 bits, pines seguros sin strapping)
+ * La detección de placa es automática (ver bloque "Selección de placa").
+ * Simplemente elige la placa correcta en Arduino IDE (Tools > Board) y
+ * compila; no hay que editar pines a mano.
  *
  * Librerías necesarias (Arduino Library Manager):
  *   - HX711 (bogde/HX711)
  *   - OneWire (PaulStoffregen/OneWire)
  *   - DallasTemperature (milesburton/Arduino-Temperature-Control-Library)
  *
- * Conexiones sugeridas (ESP32-S3 DevKitC-1):
- *   Potenciómetro (cursor/wiper) -> GPIO1  (ADC1_CH0)
- *   HX711   DOUT -> GPIO4        SCK -> GPIO5
- *   DS18B20 x2 (bus OneWire compartido) -> GPIO6 con resistencia
- *     pull-up de 4.7k entre datos y 3.3V
+ * Conexiones por placa:
+ *   Arduino Uno:
+ *     Potenciómetro (cursor/wiper) -> A0
+ *     HX711   DOUT -> D6            SCK -> D7
+ *     DS18B20 x2 (bus compartido)   -> D2  (pull-up 4.7k a 5V)
+ *     Excitación potenciómetro -> 5V (no 3.3V, Uno no tiene salida 3.3V de sobra)
  *
- *   NOTA: en ESP32-S3 se evitan GPIO0/3/45/46 (strapping) y GPIO26-37
- *   (reservados si el módulo usa PSRAM/flash octal). Por eso se usan
- *   pines bajos (1, 4, 5, 6) en vez de los típicos del ESP32 original.
+ *   ESP32-WROOM-32 clásico:
+ *     Potenciómetro -> GPIO34 (ADC1_CH6, solo entrada, ideal)
+ *     HX711   DOUT -> GPIO16        SCK -> GPIO17
+ *     DS18B20 x2 -> GPIO4 (pull-up 4.7k a 3.3V)
  *
- *   Placa en Arduino IDE: "ESP32S3 Dev Module".
- *   Si tu placa tiene un solo puerto USB nativo (no un chip USB-UART
- *   aparte), activa "USB CDC On Boot: Enabled" en Herramientas, o el
- *   puerto serie no aparecerá hasta inicializar el stack USB.
+ *   ESP32-S3:
+ *     Potenciómetro -> GPIO1  (ADC1_CH0)
+ *     HX711   DOUT -> GPIO4        SCK -> GPIO5
+ *     DS18B20 x2 -> GPIO6 (pull-up 4.7k a 3.3V)
+ *     NOTA: en ESP32-S3 se evitan GPIO0/3/45/46 (strapping) y GPIO26-37
+ *     (reservados si el módulo usa PSRAM/flash octal).
+ *     Placa en Arduino IDE: "ESP32S3 Dev Module". Si tu placa tiene un
+ *     solo puerto USB nativo (no un chip USB-UART aparte), activa
+ *     "USB CDC On Boot: Enabled" en Herramientas.
  *
  * Protocolo serie (115200 baudios, líneas terminadas en \n):
  *   GUI -> ESP32:
@@ -46,15 +61,40 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
-// ----- Pines (ESP32-S3) -----
-#define HX711_DOUT_PIN   4
-#define HX711_SCK_PIN    5
-#define POT_PIN          1    // ADC1_CH0
-#define ONEWIRE_PIN      6
+// ----- Selección de placa (automática, no editar) -----
+#if defined(ARDUINO_ARCH_AVR)
+  #define BOARD_UNO
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+  #define BOARD_ESP32S3
+#elif defined(ARDUINO_ARCH_ESP32)
+  #define BOARD_ESP32_CLASICO
+#else
+  #error "Placa no soportada: usa Arduino Uno, ESP32-WROOM-32 o ESP32-S3"
+#endif
 
-// ----- Parámetros -----
-#define POT_VREF         3.3f
-#define POT_ADC_MAX      4095.0f
+// ----- Pines y parámetros por placa -----
+#if defined(BOARD_UNO)
+  #define HX711_DOUT_PIN   6
+  #define HX711_SCK_PIN    7
+  #define POT_PIN          A0
+  #define ONEWIRE_PIN      2
+  #define POT_VREF         5.0f
+  #define POT_ADC_MAX      1023.0f
+#elif defined(BOARD_ESP32_CLASICO)
+  #define HX711_DOUT_PIN   16
+  #define HX711_SCK_PIN    17
+  #define POT_PIN          34   // ADC1_CH6, solo entrada
+  #define ONEWIRE_PIN      4
+  #define POT_VREF         3.3f
+  #define POT_ADC_MAX      4095.0f
+#elif defined(BOARD_ESP32S3)
+  #define HX711_DOUT_PIN   4
+  #define HX711_SCK_PIN    5
+  #define POT_PIN          1    // ADC1_CH0
+  #define ONEWIRE_PIN      6
+  #define POT_VREF         3.3f
+  #define POT_ADC_MAX      4095.0f
+#endif
 // Recorrido físico (mm) correspondiente al rango completo del potenciómetro.
 // Ajustar según el montaje mecánico real.
 #define POT_RECORRIDO_MM 100.0f
@@ -223,9 +263,13 @@ void setup() {
     offsetCelda = balanza.read();
   }
 
+#if defined(ARDUINO_ARCH_ESP32)
   analogReadResolution(12);
   pinMode(POT_PIN, INPUT);
   analogSetPinAttenuation(POT_PIN, ADC_11db); // habilita rango completo 0-3.3V
+#else
+  pinMode(POT_PIN, INPUT); // Arduino Uno: ADC fijo de 10 bits, sin configuración extra
+#endif
   posicionReferenciaRaw = leerPotCrudo();
 
   detectarSensoresTemperatura();
