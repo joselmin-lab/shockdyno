@@ -99,6 +99,11 @@
 // Gefran LT-M-0150-S: 150 mm de carrera.
 #define POT_RECORRIDO_MM 150.0f
 
+// Invierte el sentido de lectura si 0 mm (comprimido) y máximo (extendido)
+// quedan al revés según el cableado físico. Cambia a false si se invierten
+// los cables café/verde-amarillo del potenciómetro.
+#define POT_INVERTIR_SENTIDO true
+
 HX711 balanza;
 OneWire oneWire(ONEWIRE_PIN);
 DallasTemperature sensoresTemp(&oneWire);
@@ -156,7 +161,11 @@ int leerPotCrudo() {
   for (int i = descarte; i < muestras - descarte; i++) {
     suma += lecturas[i];
   }
-  return (int)(suma / (muestras - 2 * descarte));
+  int promedio = (int)(suma / (muestras - 2 * descarte));
+#if POT_INVERTIR_SENTIDO
+  promedio = (int)POT_ADC_MAX - promedio;
+#endif
+  return promedio;
 }
 
 float leerPosicionMM() {
