@@ -4,6 +4,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+KGF_POR_NEWTON = 1.0 / 9.80665  # 1 kgf = 9.80665 N; la fuerza se muestra en Kg (kgf)
+
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -141,7 +143,7 @@ class ValuesPanel(QWidget):
         layout = QGridLayout()
         layout.setSpacing(16)
 
-        self.force_label = QLabel("0.00 N")
+        self.force_label = QLabel("0.00 Kg")
         self.force_label.setObjectName("value")
         self.recorrido_label = QLabel("0.00 mm")
         self.recorrido_label.setObjectName("value")
@@ -174,7 +176,7 @@ class ValuesPanel(QWidget):
         self.setLayout(layout)
 
     def update_values(self, fuerza, recorrido, temp1, temp2, estado, motor, tiempo):
-        self.force_label.setText(f"{fuerza:.2f} N")
+        self.force_label.setText(f"{fuerza:.2f} Kg")
         self.recorrido_label.setText(f"{recorrido:.2f} mm")
         self.temp1_label.setText(f"{temp1:.1f} °C")
         self.temp2_label.setText(f"{temp2:.1f} °C")
@@ -214,12 +216,14 @@ class GraphPanel(QWidget):
         },
         "Fuerza vs Tiempo": {
             "lineas": [("t", "f", "#60a5fa", None)],
-            "titulo": "Fuerza vs Tiempo", "xlabel": "Tiempo (s)", "ylabel": "Fuerza (N)",
+            "titulo": "Fuerza vs Tiempo", "xlabel": "Tiempo (s)", "ylabel": "Fuerza (Kg)",
         },
         "Fuerza vs Recorrido": {
             "lineas": [("r", "f", "#34d399", None)],
-            "titulo": "Fuerza vs Recorrido", "xlabel": "Recorrido (mm)", "ylabel": "Fuerza (N)",
+            "titulo": "Fuerza vs Recorrido", "xlabel": "Recorrido (mm)", "ylabel": "Fuerza (Kg)",
         },
+        # "Fuerza vs Recorrido (ciclos)" se maneja aparte (numero variable de
+        # lineas, una por ciclo 0->8cm->0 detectado), ver _construir_ejes/render_graph.
         "Temperatura 1 vs Tiempo": {
             "lineas": [("t", "t1", "#f59e0b", None)],
             "titulo": "Temperatura 1 vs Tiempo", "xlabel": "Tiempo (s)", "ylabel": "Temperatura (°C)",
@@ -239,13 +243,27 @@ class GraphPanel(QWidget):
                           # self.data conserva el historial completo para guardar la prueba)
     INTERVALO_REDIBUJO_MS = 250  # redibuja como maximo ~4 veces/seg, desacoplado de la llegada de datos
 
+    GRAFICO_CICLOS = "Fuerza vs Recorrido (ciclos)"
+    # El amortiguador parte de la referencia 0 (ZERO_POS), se aleja (~80mm) y
+    # vuelve a 0: cada vez que vuelve cerca de 0 habiendo recorrido una
+    # distancia minima se considera terminado un ciclo. Tolerancias en mm.
+    UMBRAL_CERO_MM = 2.0
+    UMBRAL_VIAJE_MM = 20.0
+    COLORES_CICLOS = [
+        "#60a5fa", "#f87171", "#34d399", "#fbbf24", "#a78bfa",
+        "#f472b6", "#22d3ee", "#facc15", "#fb923c", "#4ade80",
+    ]
+
     def __init__(self):
         super().__init__()
-        self.data = {"t": [], "f": [], "r": [], "t1": [], "t2": []}
+        self.data = {"t": [], "f": [], "r": [], "t1": [], "t2": [], "ciclo": []}
         self.ax2 = None  # eje secundario (twinx), reutilizado en vez de recrearse
         self._built_name = None  # tipo de grafico con el que se construyeron los ejes actuales
         self._lines = []  # lineas (Line2D) ya creadas, reutilizadas en cada actualizacion
         self._dirty = False  # hay datos nuevos pendientes de pintar
+        self._cycle_lines = {}  # ciclo_id -> Line2D, solo para GRAFICO_CICLOS
+        self._cycle_id = 0
+        self._viajo_lejos = False
         self.init_ui()
 
         # El pintado en pantalla puede ser lento (cientos de ms); si se intentara
@@ -266,6 +284,7 @@ class GraphPanel(QWidget):
             "Recorrido vs Tiempo",
             "Fuerza vs Tiempo",
             "Fuerza vs Recorrido",
+            self.GRAFICO_CICLOS,
             "Temperatura 1 vs Tiempo",
             "Temperatura 2 vs Tiempo",
             "Fuerza y Recorrido",
@@ -280,12 +299,24 @@ class GraphPanel(QWidget):
         layout.addWidget(self.canvas)
         self.setLayout(layout)
 
+    def _procesar_ciclo(self, r):
+        """Detecta ciclos 0 -> ~8cm -> 0 a partir del recorrido. Devuelve el
+        id de ciclo al que pertenece la muestra actual."""
+        ciclo_id = self._cycle_id
+        if abs(r) > self.UMBRAL_VIAJE_MM:
+            self._viajo_lejos = True
+        elif self._viajo_lejos and abs(r) <= self.UMBRAL_CERO_MM:
+            self._viajo_lejos = False
+            self._cycle_id += 1
+        return ciclo_id
+
     def update_data(self, t, f, r, t1, t2):
         self.data["t"].append(t)
         self.data["f"].append(f)
         self.data["r"].append(r)
         self.data["t1"].append(t1)
         self.data["t2"].append(t2)
+        self.data["ciclo"].append(self._procesar_ciclo(r))
         self._dirty = True
 
     def _redibujar_si_hay_cambios(self):
@@ -294,8 +325,11 @@ class GraphPanel(QWidget):
             self.render_graph()
 
     def clear_data(self):
-        self.data = {"t": [], "f": [], "r": [], "t1": [], "t2": []}
+        self.data = {"t": [], "f": [], "r": [], "t1": [], "t2": [], "ciclo": []}
         self._built_name = None  # fuerza reconstruir los ejes (p.ej. limpiar leyenda/eje secundario)
+        self._cycle_lines = {}
+        self._cycle_id = 0
+        self._viajo_lejos = False
         self._dirty = False
         self.render_graph()
 
@@ -307,6 +341,7 @@ class GraphPanel(QWidget):
             self.ax2.remove()
             self.ax2 = None
         self._lines = []
+        self._cycle_lines = {}
 
         if name == "Fuerza y Recorrido":
             (linea_f,) = self.canvas.ax.plot([], [], color="#60a5fa", linewidth=2, label="Fuerza", antialiased=False)
@@ -315,9 +350,13 @@ class GraphPanel(QWidget):
             self._lines = [("f", linea_f, self.canvas.ax), ("r", linea_r, self.ax2)]
             self.canvas.ax.set_title("Fuerza y Recorrido")
             self.canvas.ax.set_xlabel("Tiempo (s)")
-            self.canvas.ax.set_ylabel("Fuerza (N)")
+            self.canvas.ax.set_ylabel("Fuerza (Kg)")
             self.ax2.set_ylabel("Recorrido (mm)")
             self.canvas.ax.legend(loc="upper left")
+        elif name == self.GRAFICO_CICLOS:
+            self.canvas.ax.set_title("Fuerza vs Recorrido (cada ciclo en un color)")
+            self.canvas.ax.set_xlabel("Recorrido (mm)")
+            self.canvas.ax.set_ylabel("Fuerza (Kg)")
         else:
             config = self.GRAFICOS[name]
             for xkey, ykey, color, label in config["lineas"]:
@@ -338,6 +377,11 @@ class GraphPanel(QWidget):
             self._construir_ejes(name)
 
         if not self.data["t"]:
+            self.canvas.draw_idle()
+            return
+
+        if name == self.GRAFICO_CICLOS:
+            self._render_ciclos()
             self.canvas.draw_idle()
             return
 
@@ -369,6 +413,40 @@ class GraphPanel(QWidget):
             eje.autoscale_view()
 
         self.canvas.draw_idle()
+
+    def _render_ciclos(self):
+        """Dibuja Fuerza vs Recorrido con una linea de color distinto por cada
+        ciclo (0 -> ~8cm -> 0) detectado. No aplica VENTANA_PUNTOS: se quiere
+        ver cada ciclo completo para comparar variaciones entre ellos."""
+        r_todos = self.data["r"]
+        f_todos = self.data["f"]
+        ciclo_todos = self.data["ciclo"]
+
+        por_ciclo = {}
+        for r, f, cid in zip(r_todos, f_todos, ciclo_todos):
+            por_ciclo.setdefault(cid, ([], []))
+            por_ciclo[cid][0].append(r)
+            por_ciclo[cid][1].append(f)
+
+        for cid, (r_vals, f_vals) in por_ciclo.items():
+            linea = self._cycle_lines.get(cid)
+            if linea is None:
+                color = self.COLORES_CICLOS[cid % len(self.COLORES_CICLOS)]
+                (linea,) = self.canvas.ax.plot(
+                    [], [], color=color, linewidth=1.8, label=f"Ciclo {cid + 1}", antialiased=False
+                )
+                self._cycle_lines[cid] = linea
+            linea.set_data(r_vals, f_vals)
+
+        if por_ciclo:
+            self.canvas.ax.relim()
+            self.canvas.ax.autoscale_view()
+            if len(por_ciclo) <= 15:
+                self.canvas.ax.legend(loc="best", fontsize=8)
+            else:
+                leyenda = self.canvas.ax.get_legend()
+                if leyenda is not None:
+                    leyenda.remove()
 
 
 class CalibrationPanel(QWidget):
@@ -495,7 +573,7 @@ class SensorTestPanel(QWidget):
         self.btn_test_celda = QPushButton("Probar celda de carga")
         self.lbl_celda_estado = QLabel("Estado: sin probar")
         self.lbl_celda_estado.setStyleSheet("color: #9ca3af;")
-        self.lbl_celda_valor = QLabel("Crudo: -- | Fuerza: -- N")
+        self.lbl_celda_valor = QLabel("Crudo: -- | Fuerza: -- Kg")
         self.lbl_celda_valor.setObjectName("smallTitle")
         celda_layout.addWidget(self.btn_test_celda)
         celda_layout.addWidget(self.lbl_celda_estado)
@@ -544,8 +622,9 @@ class SensorTestPanel(QWidget):
     def mostrar_resultado_celda(self, payload):
         ok = bool(payload.get("ok"))
         self._set_estado(self.lbl_celda_estado, ok, "OK", "no responde")
+        fuerza_kg = payload.get("fuerza_n", 0) * KGF_POR_NEWTON
         self.lbl_celda_valor.setText(
-            f"Crudo: {payload.get('raw', '--')} | Fuerza: {payload.get('fuerza_n', 0):.3f} N"
+            f"Crudo: {payload.get('raw', '--')} | Fuerza: {fuerza_kg:.3f} Kg"
         )
 
     def mostrar_resultado_pot(self, payload):
@@ -768,7 +847,7 @@ class MainWindow(QMainWindow):
         self.last_reading = data
         if not self.connected:
             return
-        fuerza = data.get("fuerza_n", 0.0)
+        fuerza = data.get("fuerza_n", 0.0) * KGF_POR_NEWTON
         recorrido = data.get("pos_mm", 0.0)
         temp1 = data.get("temp1", 0.0)
         temp2 = data.get("temp2", 0.0)
@@ -836,7 +915,7 @@ class MainWindow(QMainWindow):
         # Tiempo real transcurrido (reloj de pared), no un contador que asume
         # que el QTimer dispara exactamente cada 100ms (puede desfasarse bajo carga).
         self.elapsed = time.monotonic() - self._inicio_prueba
-        fuerza = self.last_reading.get("fuerza_n", 0.0)
+        fuerza = self.last_reading.get("fuerza_n", 0.0) * KGF_POR_NEWTON
         recorrido = self.last_reading.get("pos_mm", 0.0)
         temp1 = self.last_reading.get("temp1", 0.0)
         temp2 = self.last_reading.get("temp2", 0.0)
